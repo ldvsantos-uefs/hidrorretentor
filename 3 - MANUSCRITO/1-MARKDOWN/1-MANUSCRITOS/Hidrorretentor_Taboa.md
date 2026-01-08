@@ -269,7 +269,7 @@ A tecnologia desenvolvida reconfigura o resíduo de taboa de passivo ambiental p
 
 # Disponibilidade de dados
 
-Os dados brutos associados aos ensaios de germinação, fitotoxicidade e medições de plântulas encontram-se organizados no repositório do projeto: https://doi.org/10.5281/zenodo......
+O conjunto de dados brutos compreendendo a cinética de germinação, ensaios de fitotoxicidade e morfometria de plântulas encontra-se disponível em repositório público sob o identificador DOI: https://doi.org/10.5281/zenodo.18184021
 
 # Referências
 
