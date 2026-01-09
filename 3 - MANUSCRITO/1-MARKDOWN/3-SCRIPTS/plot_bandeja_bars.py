@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+from statistics import NormalDist
 
 FILE_GLOB = r"C:/Users/vidal/OneDrive/Documentos/13 - CLONEGIT/artigo-posdoc/2 - HIDRORRETENTOR/2 - DADOS/Avaliac*substrato*DIEGO.xlsx"
 OUTPUT_DIR = r"C:/Users/vidal/OneDrive/Documentos/13 - CLONEGIT/artigo-posdoc/2 - HIDRORRETENTOR/3 - MANUSCRITO/1-MARKDOWN/2-IMG"
@@ -56,6 +57,55 @@ plt.rcParams.update(
         "ytick.color": "black",
     }
 )
+
+
+def _bca_ci(
+    sample: np.ndarray,
+    stat_fn,
+    alpha: float = 0.05,
+    rng: np.random.Generator | None = None,
+    b: int = 1000,
+) -> tuple[float, float]:
+    if rng is None:
+        rng = np.random.default_rng(123)
+
+    x = np.asarray(sample, dtype=float)
+    x = x[np.isfinite(x)]
+    n = x.size
+    if n < 3:
+        return (float("nan"), float("nan"))
+
+    theta_hat = float(stat_fn(x))
+    nd = NormalDist()
+
+    boot_stats = np.empty(b, dtype=float)
+    for i in range(b):
+        idx = rng.integers(0, n, size=n)
+        boot_stats[i] = float(stat_fn(x[idx]))
+
+    prop_less = np.mean(boot_stats < theta_hat)
+    prop_less = min(max(float(prop_less), 1e-6), 1 - 1e-6)
+    z0 = float(nd.inv_cdf(prop_less))
+
+    jack = np.empty(n, dtype=float)
+    for i in range(n):
+        jack[i] = float(stat_fn(np.delete(x, i)))
+    jack_mean = float(np.mean(jack))
+    num = float(np.sum((jack_mean - jack) ** 3))
+    den = float(6.0 * (np.sum((jack_mean - jack) ** 2) ** 1.5))
+    a = float(num / den) if den != 0 else 0.0
+
+    def _adj(alpha_i: float) -> float:
+        z = float(nd.inv_cdf(alpha_i))
+        adj = float(nd.cdf(z0 + (z0 + z) / (1 - a * (z0 + z))))
+        return float(min(max(adj, 1e-6), 1 - 1e-6))
+
+    lo_q = _adj(alpha / 2)
+    hi_q = _adj(1 - alpha / 2)
+
+    lo = float(np.quantile(boot_stats, lo_q))
+    hi = float(np.quantile(boot_stats, hi_q))
+    return lo, hi
 
 
 def remove_outliers_iqr(df: pd.DataFrame, group_col: str, value_col: str) -> pd.DataFrame:
@@ -143,9 +193,25 @@ def summarize(df: pd.DataFrame, col: str) -> pd.DataFrame:
     melted = subset.rename(columns={col: "Valor"})
     melted = remove_outliers_iqr(melted, "Tratamento", "Valor")
 
-    stats = (
-        melted.groupby("Tratamento")["Valor"].agg(["mean", "std"]).reindex([o for o in ORDER if o in melted["Tratamento"].unique()])
-    )
+    rng = np.random.default_rng(123)
+    rows = []
+    for key in [o for o in ORDER if o in melted["Tratamento"].unique()]:
+        x = pd.to_numeric(melted.loc[melted["Tratamento"] == key, "Valor"], errors="coerce").dropna().to_numpy(dtype=float)
+        if x.size == 0:
+            continue
+        m = float(np.mean(x))
+        ci_lo, ci_hi = _bca_ci(x, np.mean, alpha=0.05, rng=rng, b=1000)
+        rows.append(
+            {
+                "mean": m,
+                "ci_low": ci_lo,
+                "ci_high": ci_hi,
+                "yerr_low": float(m - ci_lo) if np.isfinite(ci_lo) else float("nan"),
+                "yerr_high": float(ci_hi - m) if np.isfinite(ci_hi) else float("nan"),
+            }
+        )
+
+    stats = pd.DataFrame(rows, index=[o for o in ORDER if o in melted["Tratamento"].unique()])
     return stats
 
 
@@ -155,11 +221,12 @@ def plot_single_bar(stats: pd.DataFrame, ylabel: str, out_name: str, palette=COR
     x = np.arange(len(stats.index))
     for i, key in enumerate(stats.index.tolist()):
         m = float(stats.loc[key, "mean"])
-        s = float(stats.loc[key, "std"]) if not pd.isna(stats.loc[key, "std"]) else 0.0
+        err_lo = float(stats.loc[key, "yerr_low"]) if not pd.isna(stats.loc[key, "yerr_low"]) else 0.0
+        err_hi = float(stats.loc[key, "yerr_high"]) if not pd.isna(stats.loc[key, "yerr_high"]) else 0.0
         ax.bar(
             i,
             m,
-            yerr=s,
+            yerr=np.array([[err_lo], [err_hi]]),
             width=0.42,
             color=palette.get(key, "#cccccc"),
             edgecolor="black",
@@ -205,11 +272,12 @@ def plot_dual_relative(stats_shoot: pd.DataFrame, stats_root: pd.DataFrame, out_
             if key not in stats.index:
                 continue
             m = float(stats.loc[key, "mean"])
-            s = float(stats.loc[key, "std"]) if not pd.isna(stats.loc[key, "std"]) else 0.0
+            err_lo = float(stats.loc[key, "yerr_low"]) if not pd.isna(stats.loc[key, "yerr_low"]) else 0.0
+            err_hi = float(stats.loc[key, "yerr_high"]) if not pd.isna(stats.loc[key, "yerr_high"]) else 0.0
             ax.bar(
                 i,
                 m,
-                yerr=s,
+                yerr=np.array([[err_lo], [err_hi]]),
                 width=0.42,
                 color=palette.get(key, "#cccccc"),
                 edgecolor="black",
@@ -267,12 +335,13 @@ def plot_triple_bandeja(stats_shoot, stats_root, stats_dn, out_name):
             if key not in stats.index:
                 continue
             m = float(stats.loc[key, "mean"])
-            s = float(stats.loc[key, "std"]) if not pd.isna(stats.loc[key, "std"]) else 0.0
+            err_lo = float(stats.loc[key, "yerr_low"]) if not pd.isna(stats.loc[key, "yerr_low"]) else 0.0
+            err_hi = float(stats.loc[key, "yerr_high"]) if not pd.isna(stats.loc[key, "yerr_high"]) else 0.0
             
             ax.bar(
                 i,
                 m,
-                yerr=s,
+                yerr=np.array([[err_lo], [err_hi]]),
                 width=0.42,
                 color=palette.get(key, "#cccccc"),
                 edgecolor="black",

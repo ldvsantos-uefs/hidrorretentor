@@ -157,10 +157,10 @@ def fit_and_export_survival(indiv: pd.DataFrame, out_dir: Path, img_dir: Path) -
 
     DISPLAY_MAP = {
         "ÁGUA DESTILADA": "Controle",
-        "FOLHA": "N2 (FOLHA)",
-        "PURA": "N3 (PURA)",
-        "SEM SOLVENTE": "N4 (SEM SOLVENTE)",
-        "SOLV+RESI": "N1 (SOLV+RESI)",
+        "FOLHA": "N2 (sem resina)",
+        "PURA": "N3 (resíduos vegetais)",
+        "SEM SOLVENTE": "N4 (resíduos e fibras)",
+        "SOLV+RESI": "N1 (formulação completa)",
     }
 
     plt.rcParams.update(
@@ -203,6 +203,9 @@ def fit_and_export_survival(indiv: pd.DataFrame, out_dir: Path, img_dir: Path) -
 
     at_risk_counts: dict[str, list[int]] = {}
 
+    # Para “aproximar” as curvas quando ficam muito próximas do topo
+    end_germinacao: list[float] = []
+
     for t in treatments:
         mask = indiv["treatment"] == t
         durations = indiv.loc[mask, "time_days"].to_numpy(dtype=float)
@@ -235,10 +238,21 @@ def fit_and_export_survival(indiv: pd.DataFrame, out_dir: Path, img_dir: Path) -
             y_cens = np.interp(cens_t, timeline, g_hat, left=g_hat[0], right=g_hat[-1])
             ax.scatter(cens_t, y_cens, marker="|", s=110, color="black", linewidths=1.0, zorder=3)
 
+        if g_hat.size:
+            end_germinacao.append(float(g_hat[-1]))
+
     ax.set_xlabel("Tempo (dias)", weight="bold")
     ax.set_ylabel("Germinação acumulada (%)", weight="bold")
     ax.set_title("Curvas de germinação acumulada", weight="bold")
-    ax.set_ylim(0, 100)
+
+    # Zoom vertical automático: se todas as curvas terminam altas, reduz o eixo Y
+    # para destacar pequenas diferenças (sem ficar “tudo em cima”).
+    y_min = 0.0
+    if end_germinacao and min(end_germinacao) >= 60:
+        margin = 10.0  # pontos percentuais
+        y_min = float(5 * np.floor((min(end_germinacao) - margin) / 5))
+        y_min = max(0.0, y_min)
+    ax.set_ylim(y_min, 100)
     ax.grid(True, linestyle="-", color="gray", alpha=0.22)
     ax.set_axisbelow(True)
 

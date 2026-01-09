@@ -2,6 +2,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import numpy as np
+from statistics import NormalDist
 
 # --- CONFIGURAÇÃO DE ESTILO ---
 # Paleta A (Pastel) - Para gráficos (a) / Parte Aérea
@@ -29,6 +30,14 @@ LEGENDA_DESCRICOES = {
 
 ORDER = ["N1", "N2", "N3", "N4", "Controle"]
 
+# Letras de comparação múltipla (Tukey HSD) conforme Tabela 4 do manuscrito
+# Hipocótilo: N1=a, N2=c, N3=a, N4=b, Controle=c
+# Radícula:   N1=a, N2=a, N3=b, N4=a, Controle=b
+TUKEY_LETTERS = {
+    "COMPRIMENTO AEREO": {"N1": "a", "N2": "c", "N3": "a", "N4": "b", "Controle": "c", "CONTROLE": "c"},
+    "COMPRIMENTO RAIZ": {"N1": "a", "N2": "a", "N3": "b", "N4": "a", "Controle": "b", "CONTROLE": "b"},
+}
+
 plt.rcParams.update({
     "font.size": 14,
     "font.family": "sans-serif",
@@ -45,6 +54,55 @@ plt.rcParams.update({
     'xtick.color': 'black',
     'ytick.color': 'black'
 })
+
+
+def _bca_ci(
+    sample: np.ndarray,
+    stat_fn,
+    alpha: float = 0.05,
+    rng: np.random.Generator | None = None,
+    b: int = 1000,
+) -> tuple[float, float]:
+    if rng is None:
+        rng = np.random.default_rng(123)
+
+    x = np.asarray(sample, dtype=float)
+    x = x[np.isfinite(x)]
+    n = x.size
+    if n < 3:
+        return (float("nan"), float("nan"))
+
+    theta_hat = float(stat_fn(x))
+    nd = NormalDist()
+
+    boot_stats = np.empty(b, dtype=float)
+    for i in range(b):
+        idx = rng.integers(0, n, size=n)
+        boot_stats[i] = float(stat_fn(x[idx]))
+
+    prop_less = np.mean(boot_stats < theta_hat)
+    prop_less = min(max(float(prop_less), 1e-6), 1 - 1e-6)
+    z0 = float(nd.inv_cdf(prop_less))
+
+    jack = np.empty(n, dtype=float)
+    for i in range(n):
+        jack[i] = float(stat_fn(np.delete(x, i)))
+    jack_mean = float(np.mean(jack))
+    num = float(np.sum((jack_mean - jack) ** 3))
+    den = float(6.0 * (np.sum((jack_mean - jack) ** 2) ** 1.5))
+    a = float(num / den) if den != 0 else 0.0
+
+    def _adj(alpha_i: float) -> float:
+        z = float(nd.inv_cdf(alpha_i))
+        adj = float(nd.cdf(z0 + (z0 + z) / (1 - a * (z0 + z))))
+        return float(min(max(adj, 1e-6), 1 - 1e-6))
+
+    lo_q = _adj(alpha / 2)
+    hi_q = _adj(1 - alpha / 2)
+
+    lo = float(np.quantile(boot_stats, lo_q))
+    hi = float(np.quantile(boot_stats, hi_q))
+    return lo, hi
 
 def adicionar_legenda(ax, present_keys: list, palette: dict):
     patches = []
@@ -109,14 +167,19 @@ def plot_sheet(sheet_name, y_label, output_file, df_curr, palette=CORES_A, tag=N
     order_display = ["N1", "N2", "N3", "N4", "Controle", "CONTROLE"]
     final_cols = [c for c in order_display if c in cols]
     
+    _rng = np.random.default_rng(123)
     means = df_curr[final_cols].mean()
-    stds = df_curr[final_cols].std()
     
     fig, ax = plt.subplots(figsize=(8, 6))
     
+    y_tops = []
     for i, col in enumerate(final_cols):
-        val_mean = means[col]
-        val_std = stds[col]
+        vals = pd.to_numeric(df_curr[col], errors="coerce").dropna().to_numpy(dtype=float)
+        val_mean = float(np.mean(vals)) if vals.size else float("nan")
+        ci_lo, ci_hi = _bca_ci(vals, np.mean, alpha=0.05, rng=_rng, b=1000)
+        err_lo = float(val_mean - ci_lo) if np.isfinite(ci_lo) else float("nan")
+        err_hi = float(ci_hi - val_mean) if np.isfinite(ci_hi) else float("nan")
+        y_tops.append(float(ci_hi) if np.isfinite(ci_hi) else float(val_mean))
         
         # Determine Color/Hatch key
         key = col
@@ -127,7 +190,7 @@ def plot_sheet(sheet_name, y_label, output_file, df_curr, palette=CORES_A, tag=N
         
         ax.bar(
             i, val_mean,
-            yerr=val_std,
+            yerr=np.array([[err_lo], [err_hi]]),
             color=color,
             edgecolor="black",
             hatch=hatch,
@@ -136,6 +199,37 @@ def plot_sheet(sheet_name, y_label, output_file, df_curr, palette=CORES_A, tag=N
             linewidth=1.0,
             error_kw={'ecolor': 'black', 'elinewidth': 1.0}
         )
+
+    # Letras do Tukey (conforme Tabela 4)
+    letters_map = TUKEY_LETTERS.get(sheet_name, {})
+    if letters_map:
+        y_max = np.nanmax(y_tops) if len(y_tops) else 0
+        y_offset = 0.03 * y_max if y_max > 0 else 0.1
+        for i, col in enumerate(final_cols):
+            letter = letters_map.get(col)
+            if letter is None and col.upper() == "CONTROLE":
+                letter = letters_map.get("Controle")
+            if not letter:
+                continue
+
+            y_text = y_tops[i] + y_offset
+            ax.text(
+                i,
+                y_text,
+                letter,
+                ha="center",
+                va="bottom",
+                fontsize=14,
+                fontweight="bold",
+                color="black",
+                zorder=5,
+            )
+
+        # Aumenta um pouco o eixo Y para as letras não ficarem coladas na borda superior
+        y_needed = (np.nanmax(y_tops) if len(y_tops) else 0) + (4 * y_offset)
+        y0, y1 = ax.get_ylim()
+        if y_needed > y1:
+            ax.set_ylim(y0, y_needed)
         
     ax.set_xticks(range(len(final_cols)))
     labels = [c.replace("CONTROLE", "Controle") for c in final_cols]

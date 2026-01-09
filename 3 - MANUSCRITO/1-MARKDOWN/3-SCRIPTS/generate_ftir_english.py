@@ -9,9 +9,14 @@ import numpy as np
 from pathlib import Path
 
 # Style settings
-plt.rcParams['font.family'] = 'Arial'
-plt.rcParams['font.size'] = 10
-plt.rcParams['axes.linewidth'] = 1.2
+plt.rcParams.update(
+    {
+        "font.size": 10,
+        "font.family": "sans-serif",
+        "font.sans-serif": ["Poppins", "Arial", "DejaVu Sans"],
+        "axes.linewidth": 1.2,
+    }
+)
 
 def load_taboa_data(csv_path):
     """Loads Taboa FTIR data"""
